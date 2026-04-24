@@ -86,19 +86,21 @@ span { color: var(--primary); text-shadow: 0 0 10px var(--glow-primary); }
 .btn-outline { background: transparent; color: var(--text-main); border: 1px solid var(--border); backdrop-filter: blur(5px); }
 .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
 
-/* Tombol WA Diperbaiki Agar Kecil dan Proporsional */
+/* Tombol WA Diperbaiki Agar Seragam Ukurannya */
 .btn-wa { 
     background: #25D366; 
     color: #fff; 
     border: none; 
-    width: fit-content; 
-    padding: 12px 30px; 
+    width: 220px; /* Memaksa lebar tombol agar sama persis */
+    max-width: 100%;
+    padding: 12px 20px; 
     margin: 0 auto; 
     border-radius: 30px;
     display: flex; 
     align-items: center; 
     justify-content: center; 
     gap: 10px; 
+    white-space: nowrap; /* Mencegah teks turun ke baris kedua */
 }
 .btn-wa:hover { background: #1ebe57; transform: translateY(-3px); box-shadow: 0 10px 20px rgba(37, 211, 102, 0.3); }
 
