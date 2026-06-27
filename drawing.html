@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Papan Tulis Virtual MediaPipe</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs" type="module"></script>
+
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #1e1e1e; color: #fff; margin: 10px; overflow: hidden; }
+        .container { position: relative; display: inline-block; width: 640px; height: 480px; margin-top: 10px; }
+        video { transform: scaleX(-1); border-radius: 8px; position: absolute; top:0; left:0; width: 640px; height: 480px; opacity: 0.3; }
+        /* Papan gambar diletakkan di atas video kamera */
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); z-index: 10; border-radius: 8px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        #status { font-weight: bold; color: #00ffcc; margin: 5px; min-height: 24px; }
+        #petunjuk { font-size: 14px; color: #aaa; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+
+    <h1>Virtual Air Canvas & Drawing</h1>
+    <div id="petunjuk">Satukan <b>Jempol & Telunjuk (Mencubit)</b> untuk Menggambar atau Menekan Tombol UI!</div>
+    <div id="status">Menginisialisasi Model AI...</div>
+
+    <div class="container">
+        <video id="webcam" autoplay playsinline width="640" height="480"></video>
+        <canvas id="paint_canvas" width="640" height="480"></canvas>
+    </div>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs";
+
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("paint_canvas");
+        const ctx = canvas.getContext("2d");
+        const statusDiv = document.getElementById("status");
+
+        let handLandmarker = undefined;
+        let lastVideoTime = -1;
+        
+        // State Gambar
+        let warnaSekarang = "#ffffff"; 
+        let ukuranPena = 4; // Default Pensil
+        let isPenghapus = false;
+        let isPenggarisAktif = false;
+        
+        // Koordinat menggambar sebelumnya (untuk menarik garis halus)
+        let xp = 0, yp = 0; 
+        let titikAwalPenggaris = null;
+
+        // Definisi Posisi Tombol UI Virtual (x, y, width, height)
+        // Karena Canvas di-mirror (scaleX(-1)), koordinat X tombol juga otomatis ikut terbalik secara visual
+        const tombolUI = [
+            { id: "hitam", x: 10, y: 10, w: 50, h: 40, warna: "#000000", teks: "Hitam", jenis: "warna" },
+            { id: "merah", x: 70, y: 10, w: 50, h: 40, warna: "#ff0000", teks: "R", jenis: "warna" },
+            { id: "hijau", x: 130, y: 10, w: 50, h: 40, warna: "#00ff00", teks: "G", jenis: "warna" },
+            { id: "biru", x: 190, y: 10, w: 50, h: 40, warna: "#0000ff", teks: "B", jenis: "warna" },
+            { id: "pensil", x: 260, y: 10, w: 65, h: 40, warna: "#555", teks: "Pensil", jenis: "alat", ukuran: 3 },
+            { id: "spidol", x: 335, y: 10, w: 65, h: 40, warna: "#555", teks: "Spidol", jenis: "alat", ukuran: 12 },
+            { id: "penggaris", x: 410, y: 10, w: 80, h: 40, warna: "#555", teks: "Penggaris", jenis: "fitur" },
+            { id: "penghapus", x: 495, y: 10, w: 80, h: 40, warna: "#555", teks: "Hapus", jenis: "alat" },
+            { id: "clear", x: 585, y: 10, w: 45, h: 40, warna: "#aa0000", teks: "CLS", jenis: "aksi" }
+        ];
+
+        // Canvas Background Awal (Transparan hitam agar video kamera di belakangnya kelihatan)
+        ctx.fillStyle = "rgba(30, 30, 30, 0.1)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 1. Load Model MediaPipe
+        async function initAI() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm");
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1
+                });
+                statusDiv.innerText = "Model AI Aktif. Membuka Webcam...";
+                startWebcam();
+            } catch (err) {
+                statusDiv.innerText = "Gagal memuat AI: " + err;
+            }
+        }
+
+        // 2. Kamera Bawaan
+        function startWebcam() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", loopingProses);
+                statusDiv.innerText = "Sistem Siap! Silakan Menggambar.";
+            }).catch(err => {
+                statusDiv.innerText = "Kamera Error: " + err;
+            });
+        }
+
+        // 3. Main Loop
+        async function loopingProses() {
+            // Kita tidak melakukan clearRect pada seluruh canvas agar goresan gambar tidak terhapus.
+            // Sebagai gantinya, kita hapus area UI saja lalu menggambar ulang UI terbarunya setiap frame.
+            ctx.fillStyle = "#1e1e1e";
+            ctx.fillRect(0, 0, canvas.width, 60); // Area panel menu atas
+            
+            gambarPanelUI();
+
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                
+                if (handLandmarker) {
+                    const results = handLandmarker.detectForVideo(video, performance.now());
+
+                    if (results.landmarks && results.landmarks.length > 0) {
+                        prosesLogikaTangan(results.landmarks[0]);
+                    } else {
+                        // Jika tangan keluar kamera, reset tracker garis koordinat sebelumnya
+                        xp = 0; yp = 0;
+                    }
+                }
+            }
+            window.requestAnimationFrame(loopingProses);
+        }
+
+        // 4. Render Interface Tombol di Canvas
+        function gambarPanelUI() {
+            tombolUI.forEach(tombol => {
+                // Beri efek border aktif jika tombol sedang terpilih
+                let isAktif = false;
+                if (tombol.jenis === "warna" && warnaSekarang === tombol.warna && !isPenghapus) isAktif = true;
+                if (tombol.id === "pensil" && ukuranPena === 3 && !isPenghapus) isAktif = true;
+                if (tombol.id === "spidol" && ukuranPena === 12 && !isPenghapus) isAktif = true;
+                if (tombol.id === "penghapus" && isPenghapus) isAktif = true;
+                if (tombol.id === "penggaris" && isPenggarisAktif) isAktif = true;
+
+                ctx.fillStyle = tombol.warna;
+                ctx.fillRect(tombol.x, tombol.y, tombol.w, tombol.h);
+                
+                // Border indikator aktif
+                ctx.strokeStyle = isAktif ? "#00ffcc" : "#ffffff";
+                ctx.lineWidth = isAktif ? 3 : 1;
+                ctx.strokeRect(tombol.x, tombol.y, tombol.w, tombol.h);
+
+                // Teks Tombol
+                ctx.fillStyle = "#ffffff";
+                if(tombol.id === "hitam") ctx.fillStyle = "#888"; // Biar tulisan hitam kelihatan
+                ctx.font = "bold 12px sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText(tombol.teks, tombol.x + (tombol.w/2), tombol.y + 24);
+            });
+        }
+
+        // 5. Pemrosesan Koordinat Utama
+        function prosesLogikaTangan(landmarks) {
+            // Ambil Koordinat Ujung Telunjuk (Index Finger Tip)
+            const telunjukX = landmarks[8].x * canvas.width;
+            const telunjukY = landmarks[8].y * canvas.height;
+
+            // Ambil Koordinat Ujung Jempol (Thumb Tip)
+            const jempolX = landmarks[4].x * canvas.width;
+            const jempolY = landmarks[4].y * canvas.height;
+
+            // Hitung jarak Euclidean antar Jempol dan Telunjuk untuk deteksi "Mencubit" (Click/Tap)
+            const jarakCubit = Math.sqrt(Math.pow(telunjukX - jempolX, 2) + Math.pow(telunjukY - jempolY, 2));
+            const isMencubit = jarakCubit < 30; // Jika jarak di bawah 30 piksel, dianggap memencet/menulis
+
+            // Gambar pointer penunjuk posisi telunjuk secara real-time (Lingkaran kecil tracker)
+            ctx.beginPath();
+            ctx.fillStyle = isMencubit ? "#00ffcc" : "#ffcc00";
+            ctx.arc(telunjukX, telunjukY, isMencubit ? 6 : 4, 0, 2 * Math.PI);
+            ctx.fill();
+
+            if (isMencubit) {
+                // SITUASI A: Jika Telunjuk berada di area atas (Panel Menu UI)
+                if (telunjukY < 60) {
+                    cekKlikUI(telunjukX, telunjukY);
+                    xp = 0; yp = 0; // Reset koordinat gambar agar tidak menarik garis dari kanvas ke menu
+                } 
+                // SITUASI B: Jika Telunjuk berada di area gambar (Kanvas)
+                else {
+                    if (isPenggarisAktif) {
+                        // Logika Penggaris Virtual (Tarik Garis Lurus Berdasarkan titik awal cubitan)
+                        if (titikAwalPenggaris === null) {
+                            titikAwalPenggaris = { x: telunjukX, y: telunjukY };
+                        }
+                        statusDiv.innerText = "Menarik Garis Lurus Penggaris...";
+                    } else {
+                        // Logika Menggambar Bebas (Pena / Spidol / Penghapus)
+                        ctx.beginPath();
+                        if (isPenghapus) {
+                            ctx.globalCompositeOperation = 'destination-out'; // Mode menghapus piksel canvas
+                            ctx.lineWidth = 40; // Diameter karet penghapus
+                        } else {
+                            ctx.globalCompositeOperation = 'source-over'; // Mode normal menggambar
+                            ctx.strokeStyle = warnaSekarang;
+                            ctx.lineWidth = ukuranPena;
+                        }
+                        
+                        ctx.lineCap = "round";
+                        ctx.lineJoin = "round";
+
+                        if (xp === 0 && yp === 0) {
+                            ctx.moveTo(telunjukX, telunjukY);
+                        } else {
+                            ctx.moveTo(xp, yp);
+                        }
+                        
+                        ctx.lineTo(telunjukX, telunjukY);
+                        ctx.stroke();
+                        
+                        // Kembalikan ke mode normal menggambar jika habis menghapus
+                        ctx.globalCompositeOperation = 'source-over';
+
+                        xp = telunjukX;
+                        yp = telunjukY;
+                        statusDiv.innerText = isPenghapus ? "Menghapus..." : "Menggambar...";
+                    }
+                }
+            } else {
+                // Jika cubitan dilepas dan penggaris aktif, eksekusi garis lurus dari titik awal ke titik akhir pelepas
+                if (isPenggarisAktif && titikAwalPenggaris !== null) {
+                    ctx.beginPath();
+                    ctx.strokeStyle = warnaSekarang;
+                    ctx.lineWidth = ukuranPena;
+                    ctx.lineCap = "round";
+                    ctx.moveTo(titikAwalPenggaris.x, titikAwalPenggaris.y);
+                    ctx.lineTo(telunjukX, telunjukY);
+                    ctx.stroke();
+                    titikAwalPenggaris = null; // Reset titik penggaris
+                }
+                
+                // Reset koordinat pen posisi saat jari dilepas
+                xp = 0; yp = 0;
+                titikAwalPenggaris = null;
+                statusDiv.innerText = "Mode Mengambang (Pena Diangkat)";
+            }
+        }
+
+        // 6. Deteksi Benturan Titik Jari ke Koordinat Kotak UI Tombol
+        function cekKlikUI(x, y) {
+            tombolUI.forEach(tombol => {
+                if (x >= tombol.x && x <= (tombol.x + tombol.w) && y >= tombol.y && y <= (tombol.y + tombol.h)) {
+                    
+                    if (tombol.jenis === "warna") {
+                        warnaSekarang = tombol.warna;
+                        isPenghapus = false;
+                        statusDiv.innerText = `Ganti Warna: ${tombol.teks}`;
+                    } 
+                    else if (tombol.jenis === "alat") {
+                        if (tombol.id === "penghapus") {
+                            isPenghapus = true;
+                            isPenggarisAktif = false;
+                            statusDiv.innerText = "Alat: Penghapus Aktif";
+                        } else {
+                            ukuranPena = tombol.ukuran;
+                            isPenghapus = false;
+                            statusDiv.innerText = `Alat: ${tombol.teks} Aktif`;
+                        }
+                    } 
+                    else if (tombol.id === "penggaris") {
+                        isPenggarisAktif = !isPenggarisAktif; // Toggle on/off penggaris
+                        if(isPenggarisAktif) isPenghapus = false;
+                        statusDiv.innerText = isPenggarisAktif ? "Penggaris Virtual ON" : "Penggaris Virtual OFF";
+                    }
+                    else if (tombol.id === "clear") {
+                        // Hapus total area gambar di bawah panel menu
+                        ctx.clearRect(0, 60, canvas.width, canvas.height);
+                        statusDiv.innerText = "Kanvas Dibersihkan!";
+                    }
+                }
+            });
+        }
+
+        // Jalankan Aplikasi
+        initAI();
+    </script>
+</body>
+</html>
