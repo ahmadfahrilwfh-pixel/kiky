@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webcam Finger Tracker - JS Murni</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs" type="module"></script>
+
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #222; color: #fff; }
+        .video-container { position: relative; display: inline-block; }
+        video { transform: scaleX(-1); border-radius: 8px; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #status { margin: 10px; font-weight: bold; color: #00ffcc; }
+    </style>
+</head>
+<body>
+
+    <h1>Deteksi Pergerakan Jari (Client-Side)</h1>
+    <div id="status">Menginisialisasi Kamera & Model AI...</div>
+
+    <div class="video-container">
+        <video id="webcam" autoplay playsinline width="640" height="480"></video>
+        <canvas id="output_canvas" width="640" height="480"></canvas>
+    </div>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs";
+
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const statusDiv = document.getElementById("status");
+        
+        let handLandmarker = undefined;
+        let lastVideoTime = -1;
+
+        // 1. Inisialisasi Model MediaPipe
+        async function initializeObjectDetector() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+            );
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            statusDiv.innerText = "Model Siap! Mengaktifkan Webcam...";
+            startWebcam();
+        }
+
+        // 2. Aktifkan Kamera
+        function startWebcam() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+                statusDiv.innerText = "Sistem Berjalan Aktif.";
+            }).catch(err => {
+                statusDiv.innerText = "Gagal mengakses webcam: " + err;
+            });
+        }
+
+        // 3. Deteksi Frame demi Frame (Looping)
+        async function predictWebcam() {
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                
+                if (handLandmarker) {
+                    const startTimeMs = performance.now();
+                    const results = handLandmarker.detectForVideo(video, startTimeMs);
+
+                    if (results.landmarks) {
+                        for (const landmarks of results.landmarks) {
+                            drawHand(landmarks);
+                            logFingerMovement(landmarks);
+                        }
+                    }
+                }
+            }
+            window.requestAnimationFrame(predictWebcam);
+        }
+
+        // 4. Gambar titik koordinat di Canvas
+        function drawHand(landmarks) {
+            canvasCtx.fillStyle = "#00ffcc";
+            canvasCtx.strokeStyle = "#ffffff";
+            canvasCtx.lineWidth = 2;
+
+            landmarks.forEach(point => {
+                const x = point.x * canvasElement.width;
+                const y = point.y * canvasElement.height;
+                
+                canvasCtx.beginPath();
+                canvasCtx.arc(x, y, 5, 0, 2 * Math.PI);
+                canvasCtx.fill();
+            });
+        }
+
+        // 5. Contoh Logika Pergerakan: Deteksi jika Ujung Telunjuk (Titik 8) berada di atas
+        function logFingerMovement(landmarks) {
+            const indexFingerTipY = landmarks[8].y;
+            const indexFingerDipY = landmarks[7].y; // Sendi di bawah ujung jari
+            
+            if (indexFingerTipY < indexFingerDipY) {
+                statusDiv.innerText = "Jari Telunjuk Menunjuk ke Atas!";
+            } else {
+                statusDiv.innerText = "Mendeteksi Tangan...";
+            }
+        }
+
+        // Jalankan program
+        initializeObjectDetector();
+    </script>
+</body>
+</html>
