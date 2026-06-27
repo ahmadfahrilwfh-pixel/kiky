@@ -3,26 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Finger Tracker - JS Murni</title>
+    <title>GitHub Cloud Dataset - Finger Tracker</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.mjs" type="module"></script>
 
     <style>
-        body { font-family: sans-serif; text-align: center; background: #222; color: #fff; }
-        .video-container { position: relative; display: inline-block; }
-        video { transform: scaleX(-1); border-radius: 8px; }
-        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
-        #status { margin: 10px; font-weight: bold; color: #00ffcc; }
+        body { font-family: sans-serif; text-align: center; background: #1e1e1e; color: #fff; margin: 20px; }
+        .container { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; }
+        .video-container { position: relative; width: 640px; height: 480px; background: #000; border-radius: 8px; }
+        video { transform: scaleX(-1); border-radius: 8px; position: absolute; top:0; left:0; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); z-index: 10; }
+        .control-panel { width: 320px; background: #2d2d2d; padding: 20px; border-radius: 8px; text-align: left; }
+        input, button, select { width: 100%; padding: 10px; margin: 8px 0; border-radius: 4px; border: none; box-sizing: border-box; }
+        button { background: #00ffcc; color: #000; font-weight: bold; cursor: pointer; }
+        button:hover { background: #00ccaa; }
+        #status { margin: 10px 0; font-weight: bold; color: #ffcc00; }
+        .dataset-list { max-height: 150px; overflow-y: auto; background: #111; padding: 10px; border-radius: 4px; font-size: 12px; }
     </style>
 </head>
 <body>
 
-    <h1>Deteksi Pergerakan Jari (Client-Side)</h1>
-    <div id="status">Menginisialisasi Kamera & Model AI...</div>
+    <h1>Perekam & Pengenal Koordinat Jari Cloud GitHub</h1>
+    <div id="status">Menginisialisasi sistem...</div>
 
-    <div class="video-container">
-        <video id="webcam" autoplay playsinline width="640" height="480"></video>
-        <canvas id="output_canvas" width="640" height="480"></canvas>
+    <div class="container">
+        <div class="video-container">
+            <video id="webcam" autoplay playsinline width="640" height="480"></video>
+            <canvas id="output_canvas" width="640" height="480"></canvas>
+        </div>
+
+        <div class="control-panel">
+            <h3>Konfigurasi GitHub</h3>
+            <input type="password" id="ghToken" placeholder="GitHub Personal Access Token (PAT)">
+            <input type="text" id="ghRepo" placeholder="username/nama-repo">
+            
+            <hr style="border-color: #444;">
+            
+            <h3>Simpan Koordinat Baru</h3>
+            <select id="namaJari">
+                <option value="Jempol">Jempol</option>
+                <option value="Telunjuk">Jari Telunjuk</option>
+                <option value="Tengah">Jari Tengah</option>
+                <option value="Manis">Jari Manis</option>
+                <option value="Kelingking">Jari Kelingking</option>
+                <option value="Kepalan">Kepalan Tangan</option>
+            </select>
+            <button id="btnSimpan">Simpan Koordinat ke GitHub</button>
+
+            <hr style="border-color: #444;">
+            <h3>Data Tersimpan di GitHub:</h3>
+            <div class="dataset-list" id="datasetList">Belum ada data dimuat.</div>
+        </div>
     </div>
 
     <script type="module">
@@ -32,25 +63,31 @@
         const canvasElement = document.getElementById("output_canvas");
         const canvasCtx = canvasElement.getContext("2d");
         const statusDiv = document.getElementById("status");
+        const datasetListDiv = document.getElementById("datasetList");
         
         let handLandmarker = undefined;
         let lastVideoTime = -1;
+        let koordinatSekarang = null; // Menyimpan data frame terakhir yang terdeteksi
+        let datasetGitHub = []; // Menyimpan data terunduh dari GitHub
 
-        // 1. Inisialisasi Model MediaPipe
-        async function initializeObjectDetector() {
-            const vision = await FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
-            );
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-                    delegate: "GPU"
-                },
-                runningMode: "VIDEO",
-                numHands: 2
-            });
-            statusDiv.innerText = "Model Siap! Mengaktifkan Webcam...";
-            startWebcam();
+        // 1. Inisialisasi Model AI
+        async function initAI() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm");
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1
+                });
+                statusDiv.innerText = "Model AI Siap. Mengaktifkan kamera...";
+                startWebcam();
+                muatDataDariGitHub(); // Coba muat data bawaan jika konfigurasi sudah diisi sebelumnya
+            } catch (err) {
+                statusDiv.innerText = "Gagal memuat AI: " + err;
+            }
         }
 
         // 2. Aktifkan Kamera
@@ -58,13 +95,13 @@
             navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
                 video.srcObject = stream;
                 video.addEventListener("loadeddata", predictWebcam);
-                statusDiv.innerText = "Sistem Berjalan Aktif.";
+                statusDiv.innerText = "Sistem Aktif. Mengamati pergerakan tangan...";
             }).catch(err => {
-                statusDiv.innerText = "Gagal mengakses webcam: " + err;
+                statusDiv.innerText = "Akses Kamera Ditolak: " + err;
             });
         }
 
-        // 3. Deteksi Frame demi Frame (Looping)
+        // 3. Loop Deteksi & Real-Time Matching
         async function predictWebcam() {
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
@@ -72,50 +109,178 @@
                 lastVideoTime = video.currentTime;
                 
                 if (handLandmarker) {
-                    const startTimeMs = performance.now();
-                    const results = handLandmarker.detectForVideo(video, startTimeMs);
+                    const results = handLandmarker.detectForVideo(video, performance.now());
 
-                    if (results.landmarks) {
-                        for (const landmarks of results.landmarks) {
-                            drawHand(landmarks);
-                            logFingerMovement(landmarks);
-                        }
+                    if (results.landmarks && results.landmarks.length > 0) {
+                        koordinatSekarang = results.landmarks[0]; // Ambil tangan pertama
+                        drawHand(koordinatSekarang);
+                        
+                        // Deteksi Otomatis berdasarkan data yang diunduh dari GitHub
+                        cocokkanKoordinat(koordinatSekarang);
                     }
                 }
             }
             window.requestAnimationFrame(predictWebcam);
         }
 
-        // 4. Gambar titik koordinat di Canvas
+        // 4. Gambar di Canvas
         function drawHand(landmarks) {
             canvasCtx.fillStyle = "#00ffcc";
             canvasCtx.strokeStyle = "#ffffff";
-            canvasCtx.lineWidth = 2;
+            canvasCtx.lineWidth = 1.5;
 
-            landmarks.forEach(point => {
+            landmarks.forEach((point) => {
                 const x = point.x * canvasElement.width;
                 const y = point.y * canvasElement.height;
-                
                 canvasCtx.beginPath();
-                canvasCtx.arc(x, y, 5, 0, 2 * Math.PI);
+                canvasCtx.arc(x, y, 4, 0, 2 * Math.PI);
                 canvasCtx.fill();
             });
         }
 
-        // 5. Contoh Logika Pergerakan: Deteksi jika Ujung Telunjuk (Titik 8) berada di atas
-        function logFingerMovement(landmarks) {
-            const indexFingerTipY = landmarks[8].y;
-            const indexFingerDipY = landmarks[7].y; // Sendi di bawah ujung jari
-            
-            if (indexFingerTipY < indexFingerDipY) {
-                statusDiv.innerText = "Jari Telunjuk Menunjuk ke Atas!";
-            } else {
-                statusDiv.innerText = "Mendeteksi Tangan...";
+        // ================= Kunci Utama: Integrasi GitHub API =================
+
+        // Fungsi Ambil Data dari GitHub saat Website Dibuka
+        async function muatDataDariGitHub() {
+            const repo = document.getElementById("ghRepo").value;
+            if (!repo) return;
+
+            // Membaca langsung dari URL raw GitHub Pages Anda agar terupdate secara publik
+            const url = `https://raw.githubusercontent.com/${repo}/main/dataset.json?t=${Date.now()}`;
+            try {
+                const respon = await fetch(url);
+                if (respon.ok) {
+                    datasetGitHub = await respon.json();
+                    updateDaftarTampilan();
+                }
+            } catch (e) {
+                console.log("Gagal mengambil dataset otomatis. Pastikan file dataset.json ada.");
             }
         }
 
-        // Jalankan program
-        initializeObjectDetector();
+        // Fungsi Update Tampilan List Data di UI
+        function updateDaftarTampilan() {
+            if (datasetGitHub.length === 0) {
+                datasetListDiv.innerText = "Belum ada data tersimpan di JSON.";
+                return;
+            }
+            datasetListDiv.innerHTML = datasetGitHub.map((d, index) => 
+                `<div>${index + 1}. <b>${d.nama}</b> (${d.koordinat.length} titik terkam)</div>`
+            ).join("");
+        }
+
+        // Fungsi Simpan (Push) Data Baru Kembali ke GitHub
+        async function simpanKeGitHub() {
+            const token = document.getElementById("ghToken").value;
+            const repo = document.getElementById("ghRepo").value;
+            const namaJari = document.getElementById("namaJari").value;
+
+            if (!token || !repo) {
+                alert("Harap isi Token GitHub dan Nama Repo terlebih dahulu!");
+                return;
+            }
+            if (!koordinatSekarang) {
+                alert("Tangan tidak terdeteksi oleh kamera! Posisikan tangan di depan webcam.");
+                return;
+            }
+
+            statusDiv.innerText = "Menghubungkan ke API GitHub...";
+
+            const url = `https://api.github.com/repos/${repo}/contents/dataset.json`;
+            
+            // Format data baru yang akan dimasukkan
+            const dataBaru = {
+                nama: namaJari,
+                koordinat: koordinatSekarang, // Menyimpan 21 titik spasial (x, y, z)
+                waktu: new Date().toISOString()
+            };
+
+            try {
+                // Langkah A: Ambil berkas lama untuk mendapatkan SHA (Syarat update file di GitHub API)
+                const getFile = await fetch(url, {
+                    headers: { "Authorization": `token ${token}` }
+                });
+                
+                let sha = "";
+                let isiSekarang = [];
+
+                if (getFile.ok) {
+                    const resJson = await getFile.json();
+                    sha = resJson.sha;
+                    // Decode base64 dari github ke teks asli JSON
+                    isiSekarang = JSON.parse(atob(resJson.content));
+                }
+
+                // Tambahkan data baru ke dalam array yang sudah ada
+                isiSekarang.push(dataBaru);
+                datasetGitHub = isiSekarang; // Update lokal memori
+
+                // Langkah B: Kirim data yang telah diperbarui kembali ke GitHub (Commit & Push via API)
+                const updateFile = await fetch(url, {
+                    method: "PUT",
+                    headers: {
+                        "Authorization": `token ${token}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        message: `Menambahkan data jari: ${namaJari}`,
+                        content: btoa(JSON.stringify(isiSekarang, null, 2)), // Encode ke Base64
+                        sha: sha // SHA file lama wajib disertakan
+                    })
+                });
+
+                if (updateFile.ok) {
+                    statusDiv.innerText = `Sukses menyimpan gerakan "${namaJari}" ke Cloud GitHub!`;
+                    updateDaftarTampilan();
+                } else {
+                    const errRes = await updateFile.json();
+                    statusDiv.innerText = "Gagal Push ke GitHub: " + errRes.message;
+                }
+
+            } catch (err) {
+                statusDiv.innerText = "Terjadi kesalahan jaringan: " + err;
+            }
+        }
+
+        // ================= Algoritma Pencocokan Pola Jari =================
+        // Membandingkan posisi koordinat tangan di webcam dengan dataset dari GitHub secara real-time
+        function cocokkanKoordinat(liveHand) {
+            if (datasetGitHub.length === 0) return;
+
+            let namaTerdeteksi = "Mencari pola...";
+            let skorTerdekat = 999; // Angka awal jarak deviasi (makin kecil makin akurat)
+
+            datasetGitHub.forEach(dataSaved => {
+                let totalSelisih = 0;
+
+                // Hitung total jarak perbedaan koordinat relatif antara tangan live dengan data tersimpan
+                // Kita gunakan titik 8 (ujung telunjuk), 4 (jempol), dan 20 (kelingking) sebagai pembanding cepat
+                const titikKunci = [4, 8, 12, 16, 20];
+                
+                titikKunci.forEach(i => {
+                    const dx = liveHand[i].x - dataSaved.koordinat[i].x;
+                    const dy = liveHand[i].y - dataSaved.koordinat[i].y;
+                    totalSelisih += Math.sqrt(dx*dx + dy*dy); // Rumus Jarak Euclidean
+                });
+
+                // Cari yang nilai selisih deviasinya paling kecil
+                if (totalSelisih < skorTerdekat && totalSelisih < 0.35) { // 0.35 adalah batas toleransi pergeseran posisi
+                    skorTerdekat = totalSelisih;
+                    namaTerdeteksi = dataSaved.nama;
+                }
+            });
+
+            if(namaTerdeteksi !== "Mencari pola...") {
+                statusDiv.innerHTML = `Terdeteksi Jari: <span style="color:#00ffcc; font-size:24px;">${namaTerdeteksi}</span>`;
+            }
+        }
+
+        // Bind Event Tombol & Input otomatis load data ketika mengetik nama repo
+        document.getElementById("btnSimpan").addEventListener("click", simpanKeGitHub);
+        document.getElementById("ghRepo").addEventListener("change", muatDataDariGitHub);
+
+        // Jalankan Aplikasi
+        initAI();
     </script>
 </body>
 </html>
