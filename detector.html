@@ -35,7 +35,7 @@
         <div class="control-panel">
             <h3>Konfigurasi GitHub</h3>
             <input type="password" id="ghToken" placeholder="GitHub Personal Access Token (PAT)">
-            <input type="text" id="ghRepo" placeholder="username/nama-repo">
+            <input type="text" id="ghRepo" placeholder="username/nama-repo" value="ahmadfahrilwfh-pixel/kiky">
             
             <hr style="border-color: #444;">
             
@@ -64,11 +64,22 @@
         const canvasCtx = canvasElement.getContext("2d");
         const statusDiv = document.getElementById("status");
         const datasetListDiv = document.getElementById("datasetList");
+        const tokenInput = document.getElementById("ghToken");
         
         let handLandmarker = undefined;
         let lastVideoTime = -1;
-        let koordinatSekarang = null; // Menyimpan data frame terakhir yang terdeteksi
-        let datasetGitHub = []; // Menyimpan data terunduh dari GitHub
+        let koordinatSekarang = null; 
+        let datasetGitHub = []; 
+
+        // Cek apakah token tersimpan sebelumnya di browser lokal
+        if (localStorage.getItem("gh_pat_token")) {
+            tokenInput.value = localStorage.getItem("gh_pat_token");
+        }
+
+        // Simpan token otomatis ke localstorage jika diinput secara manual
+        tokenInput.addEventListener("input", () => {
+            localStorage.setItem("gh_pat_token", tokenInput.value);
+        });
 
         // 1. Inisialisasi Model AI
         async function initAI() {
@@ -84,7 +95,7 @@
                 });
                 statusDiv.innerText = "Model AI Siap. Mengaktifkan kamera...";
                 startWebcam();
-                muatDataDariGitHub(); // Coba muat data bawaan jika konfigurasi sudah diisi sebelumnya
+                await muatDataDariGitHub(); // Membaca otomatis berkas cloud sejak inisialisasi awal
             } catch (err) {
                 statusDiv.innerText = "Gagal memuat AI: " + err;
             }
@@ -95,7 +106,7 @@
             navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
                 video.srcObject = stream;
                 video.addEventListener("loadeddata", predictWebcam);
-                statusDiv.innerText = "Sistem Aktif. Mengamati pergerakan tangan...";
+                statusDiv.innerText = "Sistem Aktif. Menyelaraskan dengan dataset cloud...";
             }).catch(err => {
                 statusDiv.innerText = "Akses Kamera Ditolak: " + err;
             });
@@ -112,10 +123,8 @@
                     const results = handLandmarker.detectForVideo(video, performance.now());
 
                     if (results.landmarks && results.landmarks.length > 0) {
-                        koordinatSekarang = results.landmarks[0]; // Ambil tangan pertama
+                        koordinatSekarang = results.landmarks[0]; 
                         drawHand(koordinatSekarang);
-                        
-                        // Deteksi Otomatis berdasarkan data yang diunduh dari GitHub
                         cocokkanKoordinat(koordinatSekarang);
                     }
                 }
@@ -138,23 +147,24 @@
             });
         }
 
-        // ================= Kunci Utama: Integrasi GitHub API =================
+        // ================= Integrasi GitHub API =================
 
         // Fungsi Ambil Data dari GitHub saat Website Dibuka
         async function muatDataDariGitHub() {
             const repo = document.getElementById("ghRepo").value;
             if (!repo) return;
 
-            // Membaca langsung dari URL raw GitHub Pages Anda agar terupdate secara publik
+            // Membaca langsung dari URL raw GitHub Pages dengan anti-cache (timestamp)
             const url = `https://raw.githubusercontent.com/${repo}/main/dataset.json?t=${Date.now()}`;
             try {
                 const respon = await fetch(url);
                 if (respon.ok) {
                     datasetGitHub = await respon.json();
                     updateDaftarTampilan();
+                    statusDiv.innerText = "Dataset Cloud Berhasil Dimuat!";
                 }
             } catch (e) {
-                console.log("Gagal mengambil dataset otomatis. Pastikan file dataset.json ada.");
+                console.log("Gagal mengambil dataset otomatis. Pastikan file dataset.json sudah ada.");
             }
         }
 
@@ -165,13 +175,13 @@
                 return;
             }
             datasetListDiv.innerHTML = datasetGitHub.map((d, index) => 
-                `<div>${index + 1}. <b>${d.nama}</b> (${d.koordinat.length} titik terkam)</div>`
+                `<div>${index + 1}. <b>${d.nama}</b> (${d.koordinat.length} titik)</div>`
             ).join("");
         }
 
         // Fungsi Simpan (Push) Data Baru Kembali ke GitHub
         async function simpanKeGitHub() {
-            const token = document.getElementById("ghToken").value;
+            const token = tokenInput.value;
             const repo = document.getElementById("ghRepo").value;
             const namaJari = document.getElementById("namaJari").value;
 
@@ -188,15 +198,13 @@
 
             const url = `https://api.github.com/repos/${repo}/contents/dataset.json`;
             
-            // Format data baru yang akan dimasukkan
             const dataBaru = {
                 nama: namaJari,
-                koordinat: koordinatSekarang, // Menyimpan 21 titik spasial (x, y, z)
+                koordinat: koordinatSekarang, 
                 waktu: new Date().toISOString()
             };
 
             try {
-                // Langkah A: Ambil berkas lama untuk mendapatkan SHA (Syarat update file di GitHub API)
                 const getFile = await fetch(url, {
                     headers: { "Authorization": `token ${token}` }
                 });
@@ -207,15 +215,12 @@
                 if (getFile.ok) {
                     const resJson = await getFile.json();
                     sha = resJson.sha;
-                    // Decode base64 dari github ke teks asli JSON
                     isiSekarang = JSON.parse(atob(resJson.content));
                 }
 
-                // Tambahkan data baru ke dalam array yang sudah ada
                 isiSekarang.push(dataBaru);
-                datasetGitHub = isiSekarang; // Update lokal memori
+                datasetGitHub = isiSekarang; 
 
-                // Langkah B: Kirim data yang telah diperbarui kembali ke GitHub (Commit & Push via API)
                 const updateFile = await fetch(url, {
                     method: "PUT",
                     headers: {
@@ -224,14 +229,17 @@
                     },
                     body: JSON.stringify({
                         message: `Menambahkan data jari: ${namaJari}`,
-                        content: btoa(JSON.stringify(isiSekarang, null, 2)), // Encode ke Base64
-                        sha: sha // SHA file lama wajib disertakan
+                        content: btoa(unescape(encodeURIComponent(JSON.stringify(isiSekarang, null, 2)))), 
+                        sha: sha 
                     })
                 });
 
                 if (updateFile.ok) {
                     statusDiv.innerText = `Sukses menyimpan gerakan "${namaJari}" ke Cloud GitHub!`;
                     updateDaftarTampilan();
+                    
+                    // Paksa memuat ulang dataset internal untuk penyesuaian real-time langsung
+                    setTimeout(muatDataDariGitHub, 1000);
                 } else {
                     const errRes = await updateFile.json();
                     statusDiv.innerText = "Gagal Push ke GitHub: " + errRes.message;
@@ -243,28 +251,25 @@
         }
 
         // ================= Algoritma Pencocokan Pola Jari =================
-        // Membandingkan posisi koordinat tangan di webcam dengan dataset dari GitHub secara real-time
         function cocokkanKoordinat(liveHand) {
-            if (datasetGitHub.length === 0) return;
+            if (!datasetGitHub || datasetGitHub.length === 0) return;
 
             let namaTerdeteksi = "Mencari pola...";
-            let skorTerdekat = 999; // Angka awal jarak deviasi (makin kecil makin akurat)
+            let skorTerdekat = 999; 
 
             datasetGitHub.forEach(dataSaved => {
                 let totalSelisih = 0;
-
-                // Hitung total jarak perbedaan koordinat relatif antara tangan live dengan data tersimpan
-                // Kita gunakan titik 8 (ujung telunjuk), 4 (jempol), dan 20 (kelingking) sebagai pembanding cepat
                 const titikKunci = [4, 8, 12, 16, 20];
                 
                 titikKunci.forEach(i => {
-                    const dx = liveHand[i].x - dataSaved.koordinat[i].x;
-                    const dy = liveHand[i].y - dataSaved.koordinat[i].y;
-                    totalSelisih += Math.sqrt(dx*dx + dy*dy); // Rumus Jarak Euclidean
+                    if (liveHand[i] && dataSaved.koordinat[i]) {
+                        const dx = liveHand[i].x - dataSaved.koordinat[i].x;
+                        const dy = liveHand[i].y - dataSaved.koordinat[i].y;
+                        totalSelisih += Math.sqrt(dx*dx + dy*dy); 
+                    }
                 });
 
-                // Cari yang nilai selisih deviasinya paling kecil
-                if (totalSelisih < skorTerdekat && totalSelisih < 0.35) { // 0.35 adalah batas toleransi pergeseran posisi
+                if (totalSelisih < skorTerdekat && totalSelisih < 0.45) { 
                     skorTerdekat = totalSelisih;
                     namaTerdeteksi = dataSaved.nama;
                 }
@@ -272,10 +277,11 @@
 
             if(namaTerdeteksi !== "Mencari pola...") {
                 statusDiv.innerHTML = `Terdeteksi Jari: <span style="color:#00ffcc; font-size:24px;">${namaTerdeteksi}</span>`;
+            } else {
+                statusDiv.innerText = "Sistem Aktif. Menyelaraskan dengan dataset cloud...";
             }
         }
 
-        // Bind Event Tombol & Input otomatis load data ketika mengetik nama repo
         document.getElementById("btnSimpan").addEventListener("click", simpanKeGitHub);
         document.getElementById("ghRepo").addEventListener("change", muatDataDariGitHub);
 
